@@ -1,0 +1,477 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Poodle Jump</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #bfe6ff; overflow: hidden; touch-action: none;
+    font-family: "Comic Sans MS", "Chalkboard SE", "Trebuchet MS", sans-serif; }
+  #wrap { position: relative; height: 100%; display: flex; justify-content: center; align-items: center; }
+  canvas { display: block; height: 100%; max-width: 100%; aspect-ratio: 2 / 3; background: #bfe6ff;
+    box-shadow: 0 0 30px rgba(0,0,0,.15); }
+  .screen { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+    justify-content: center; text-align: center; color: #2b2b52; pointer-events: none; }
+  .screen > * { pointer-events: auto; }
+  .hidden { display: none !important; }
+  h1 { font-size: clamp(36px, 9vh, 72px); margin: 0 0 4px; color: #ff4f5e;
+    text-shadow: 3px 3px 0 #fff, 6px 6px 0 rgba(0,0,0,.12); letter-spacing: 1px; }
+  h2 { font-size: clamp(22px, 4.5vh, 36px); margin: 8px 0; }
+  p { margin: 6px 16px; font-size: clamp(14px, 2.4vh, 20px); }
+  .pick { display: flex; gap: 18px; margin: 14px 0; flex-wrap: wrap; justify-content: center; }
+  .card { background: #fff; border: 5px solid #ffd23f; border-radius: 24px; padding: 10px 14px 6px;
+    cursor: pointer; width: clamp(120px, 18vh, 170px); transition: transform .15s; box-shadow: 0 6px 0 #e0b400; }
+  .card:hover, .card:focus { transform: translateY(-6px) rotate(-2deg); outline: none; }
+  .card img { height: clamp(120px, 24vh, 220px); display: block; margin: 0 auto; }
+  .card span { display: block; font-size: clamp(20px, 3.5vh, 30px); font-weight: bold; color: #ff4f5e; }
+  .card small { display: block; font-size: 13px; color: #777; }
+  button.big { font: inherit; font-size: clamp(20px, 3.5vh, 28px); background: #4cd964; color: #fff; border: 0;
+    border-radius: 20px; padding: 10px 28px; margin: 8px; cursor: pointer; box-shadow: 0 6px 0 #2fa548; }
+  button.big.alt { background: #5ab0ff; box-shadow: 0 6px 0 #2f84d4; }
+  button.big:active { transform: translateY(4px); box-shadow: 0 2px 0 #2fa548; }
+  .panel { background: rgba(255,255,255,.88); border-radius: 28px; padding: 18px 22px; margin: 0 16px; }
+  #sound { position: absolute; top: 10px; right: 10px; font-size: 22px; background: rgba(255,255,255,.7);
+    border: 0; border-radius: 50%; width: 42px; height: 42px; cursor: pointer; z-index: 5; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <canvas id="c" width="480" height="720"></canvas>
+
+  <div id="menu" class="screen">
+    <div class="panel">
+      <h1>Poodle Jump!</h1>
+      <p>Bounce up to the sky and dodge the silly tomatoes! 🍅</p>
+      <h2>Who's jumping today?</h2>
+      <div class="pick">
+        <div class="card" tabindex="0" data-who="oliver"><img src="assets/oliver.png" alt="Oliver"><span>Oliver</span><small id="best-oliver"></small></div>
+        <div class="card" tabindex="0" data-who="elliot"><img src="assets/elliot.png" alt="Elliot"><span>Elliot</span><small id="best-elliot"></small></div>
+      </div>
+      <p>⬅️ ➡️ arrow keys, or tap / tilt on a phone<br>Land on a tomato's head to squish it! ⭐ Stars give bonus points</p>
+    </div>
+  </div>
+
+  <div id="over" class="screen hidden">
+    <div class="panel">
+      <h1 id="overTitle">Splat!</h1>
+      <h2 id="overScore"></h2>
+      <p id="overBest"></p>
+      <button class="big" id="again">Play again</button>
+      <button class="big alt" id="change">Change player</button>
+    </div>
+  </div>
+
+  <button id="sound" title="Sound on/off">🔊</button>
+</div>
+
+<script>
+(() => {
+const cv = document.getElementById('c');
+const ctx = cv.getContext('2d');
+const W = cv.width, H = cv.height;
+
+// ---------- assets ----------
+const imgs = {};
+for (const n of ['oliver', 'elliot']) { imgs[n] = new Image(); imgs[n].src = `assets/${n}.png`; }
+
+// ---------- storage (safe) ----------
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+};
+const bestOf = who => +(store.get('pj-best-' + who) || 0);
+function showBests() {
+  for (const n of ['oliver', 'elliot']) {
+    const b = bestOf(n);
+    document.getElementById('best-' + n).textContent = b ? `Best: ${b}` : 'Tap to play!';
+  }
+}
+
+// ---------- sound ----------
+let actx = null, soundOn = store.get('pj-sound') !== 'off';
+const soundBtn = document.getElementById('sound');
+soundBtn.textContent = soundOn ? '🔊' : '🔇';
+soundBtn.onclick = e => { e.stopPropagation(); soundOn = !soundOn; soundBtn.textContent = soundOn ? '🔊' : '🔇'; store.set('pj-sound', soundOn ? 'on' : 'off'); };
+function tone(f1, f2, dur, type = 'sine', vol = .15) {
+  if (!soundOn) return;
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain(), t = actx.currentTime;
+    o.type = type; o.frequency.setValueAtTime(f1, t); o.frequency.exponentialRampToValueAtTime(f2, t + dur);
+    g.gain.setValueAtTime(vol, t); g.gain.exponentialRampToValueAtTime(.001, t + dur);
+    o.connect(g).connect(actx.destination); o.start(t); o.stop(t + dur);
+  } catch {}
+}
+const sfx = {
+  boing: () => tone(300, 620, .15, 'sine', .12),
+  spring: () => { tone(200, 1200, .35, 'triangle', .15); },
+  star: () => { tone(880, 1320, .08, 'square', .06); setTimeout(() => tone(1320, 1760, .1, 'square', .06), 70); },
+  squish: () => tone(400, 80, .25, 'sawtooth', .1),
+  ouch: () => { tone(500, 120, .5, 'triangle', .18); },
+  crack: () => tone(180, 60, .15, 'square', .07),
+};
+
+// ---------- input ----------
+const keys = {};
+let touchDir = 0, tilt = 0, tiltSeen = false;
+addEventListener('keydown', e => { keys[e.key] = true; if (e.key.startsWith('Arrow') || e.key === ' ') e.preventDefault(); });
+addEventListener('keyup', e => { keys[e.key] = false; });
+function touchHandler(e) {
+  if (state !== 'play') return;
+  const t = e.touches[0];
+  if (!t) { touchDir = 0; return; }
+  const r = cv.getBoundingClientRect();
+  touchDir = (t.clientX - r.left) < r.width / 2 ? -1 : 1;
+  e.preventDefault();
+}
+cv.addEventListener('touchstart', touchHandler, { passive: false });
+cv.addEventListener('touchmove', touchHandler, { passive: false });
+cv.addEventListener('touchend', touchHandler, { passive: false });
+addEventListener('deviceorientation', e => {
+  if (e.gamma == null) return;
+  tiltSeen = true; tilt = Math.max(-1, Math.min(1, e.gamma / 25));
+});
+function askTilt() {
+  if (typeof DeviceOrientationEvent !== 'undefined' && DeviceOrientationEvent.requestPermission) {
+    DeviceOrientationEvent.requestPermission().catch(() => {});
+  }
+}
+
+// ---------- game state ----------
+let state = 'menu', who = 'oliver';
+let player, plats, tomatoes, stars, particles, popups, cam = 0, score = 0, starBonus, highest = 0, lives, invuln, shake, time;
+const GRAV = 0.42, JUMP = -13.2, SPRING = -21, PW = 76, PH = 16;
+
+const rand = (a, b) => a + Math.random() * (b - a);
+const difficulty = () => Math.min(1, highest / 9000); // 0 -> 1 as you climb
+
+function reset() {
+  const img = imgs[who];
+  const ph = 108, pw = img.naturalWidth ? ph * img.naturalWidth / img.naturalHeight : 46;
+  player = { x: W / 2 - pw / 2, y: H - 160, w: pw, h: ph, vx: 0, vy: JUMP, face: 1, squash: 0 };
+  plats = []; tomatoes = []; stars = []; particles = []; popups = [];
+  cam = 0; score = 0; starBonus = 0; highest = 0; lives = 3; invuln = 0; shake = 0; time = 0;
+  plats.push({ x: W / 2 - PW / 2, y: H - 40, type: 'normal' });
+  let y = H - 40;
+  while (y > -H) { y -= rand(60, 95); addPlat(y); }
+}
+
+function addPlat(y) {
+  const d = difficulty();
+  const r = Math.random();
+  let type = 'normal';
+  if (r < 0.10 + d * 0.15) type = 'moving';
+  else if (r < 0.16 + d * 0.22) type = 'cloud';
+  const p = { x: rand(0, W - PW), y, type, dir: Math.random() < .5 ? -1 : 1, speed: rand(1, 1.8 + d * 1.5), broken: false, fall: 0 };
+  if (type !== 'cloud' && Math.random() < 0.08) p.spring = { x: rand(8, PW - 28), t: 0 };
+  plats.push(p);
+  // a guaranteed solid platform near every cloud so it's always reachable
+  if (type === 'cloud') plats.push({ x: rand(0, W - PW), y: y - rand(25, 40), type: 'normal', dir: 1, speed: 0 });
+  if (Math.random() < 0.13) stars.push({ x: rand(20, W - 20), y: y - rand(40, 90), t: Math.random() * 6, got: false });
+  if (highest > 400 && Math.random() < 0.11 + d * 0.14) spawnTomato(y - rand(80, 160));
+}
+
+function spawnTomato(y) {
+  const d = difficulty();
+  const kind = Math.random() < 0.5 + d * 0.2 ? 'float' : 'bounce';
+  tomatoes.push({ x: rand(30, W - 30), y, r: 22, kind, vx: rand(.6, 1.2 + d * 1.4) * (Math.random() < .5 ? -1 : 1), base: y, t: Math.random() * 6, vy: 0, squished: 0, blink: 0 });
+}
+
+function start(w) {
+  who = w; reset(); state = 'play';
+  document.getElementById('menu').classList.add('hidden');
+  document.getElementById('over').classList.add('hidden');
+  askTilt();
+}
+
+function burst(x, y, colors, n = 14, spd = 4) {
+  for (let i = 0; i < n; i++) {
+    const a = Math.random() * Math.PI * 2, s = rand(1, spd);
+    particles.push({ x, y, vx: Math.cos(a) * s, vy: Math.sin(a) * s - 1, life: rand(30, 55), c: colors[i % colors.length], r: rand(3, 6) });
+  }
+}
+function popup(x, y, text, c = '#ff4f5e') { popups.push({ x, y, text, c, life: 50 }); }
+
+// ---------- update ----------
+function update() {
+  time++;
+  const p = player;
+  // horizontal control
+  let dir = 0;
+  if (keys.ArrowLeft || keys.a || keys.A) dir -= 1;
+  if (keys.ArrowRight || keys.d || keys.D) dir += 1;
+  if (touchDir) dir = touchDir;
+  if (!dir && tiltSeen && Math.abs(tilt) > .08) dir = tilt;
+  p.vx += dir * 0.9; p.vx *= 0.86;
+  p.vx = Math.max(-8, Math.min(8, p.vx));
+  if (Math.abs(p.vx) > .3) p.face = p.vx > 0 ? 1 : -1;
+  p.x += p.vx;
+  if (p.x + p.w / 2 < 0) p.x += W; if (p.x + p.w / 2 > W) p.x -= W;
+
+  p.vy += GRAV; p.y += p.vy;
+  p.squash *= 0.85;
+  if (invuln > 0) invuln--;
+
+  // platform collisions (only when falling, feet crossing top)
+  const feet = p.y + p.h, footL = p.x + p.w * .22, footR = p.x + p.w * .78;
+  if (p.vy > 0) {
+    for (const pl of plats) {
+      if (pl.broken) continue;
+      if (footR > pl.x && footL < pl.x + PW && feet >= pl.y && feet - p.vy <= pl.y + 4) {
+        if (pl.type === 'cloud') {
+          pl.broken = true; sfx.crack(); burst(pl.x + PW / 2, pl.y, ['#fff', '#e8f4ff'], 10, 3);
+          p.y = pl.y - p.h; p.vy = JUMP * .75; p.squash = 1; break;
+        }
+        p.y = pl.y - p.h;
+        if (pl.spring && footR > pl.x + pl.spring.x && footL < pl.x + pl.spring.x + 22) {
+          p.vy = SPRING; pl.spring.t = 12; sfx.spring(); burst(p.x + p.w / 2, feet, ['#ffd23f', '#ff8fab', '#7ae582'], 18, 5);
+        } else { p.vy = JUMP; sfx.boing(); }
+        p.squash = 1;
+        break;
+      }
+    }
+  }
+
+  // camera follows upwards only
+  const target = p.y - H * 0.42;
+  if (target < cam) cam = target;
+  highest = Math.max(highest, Math.round(-cam));
+  score = Math.round(highest / 5) + starBonus;
+
+  // platforms move / cleanup / generate
+  for (const pl of plats) {
+    if (pl.type === 'moving') { pl.x += pl.dir * pl.speed; if (pl.x < 0 || pl.x > W - PW) pl.dir *= -1; }
+    if (pl.broken) { pl.fall += .5; pl.y += pl.fall; }
+    if (pl.spring && pl.spring.t > 0) pl.spring.t--;
+  }
+  plats = plats.filter(pl => pl.y - cam < H + 60);
+  let top = Math.min(...plats.map(pl => pl.y));
+  const gapMax = 95 + difficulty() * 35;
+  while (top > cam - 120) { top -= rand(60, gapMax); addPlat(top); }
+
+  // stars
+  for (const s of stars) {
+    s.t += .08;
+    if (!s.got && Math.abs(p.x + p.w / 2 - s.x) < p.w / 2 + 12 && Math.abs(p.y + p.h / 2 - s.y) < p.h / 2 + 12) {
+      s.got = true; starBonus += 25; sfx.star(); burst(s.x, s.y, ['#ffd23f', '#fff3b0'], 12, 3); popup(s.x, s.y, '+25', '#e0a800');
+    }
+  }
+  stars = stars.filter(s => !s.got && s.y - cam < H + 40);
+
+  // tomatoes
+  for (const t of tomatoes) {
+    t.t += .05;
+    if (t.blink > 0) t.blink--; else if (Math.random() < .01) t.blink = 8;
+    if (t.squished) { t.squished++; continue; }
+    t.x += t.vx;
+    if (t.x < t.r || t.x > W - t.r) t.vx *= -1;
+    if (t.kind === 'float') t.y = t.base + Math.sin(t.t) * 18;
+    else { t.y = t.base - Math.abs(Math.sin(t.t * 1.4)) * 70; }
+    // collision
+    const cx = p.x + p.w / 2, cy = p.y + p.h / 2;
+    const dx = Math.abs(cx - t.x), dy = cy - t.y;
+    if (dx < p.w * .38 + t.r * .8 && Math.abs(dy) < p.h * .45 + t.r * .8) {
+      if (p.vy > 0 && p.y + p.h < t.y + 4) {
+        // stomped it!
+        t.squished = 1; p.vy = JUMP * 1.05; p.squash = 1; starBonus += 50;
+        sfx.squish(); burst(t.x, t.y, ['#ff3b3b', '#ff6b6b', '#3bb54a'], 22, 5); popup(t.x, t.y - 10, 'SQUISH! +50');
+      } else if (!invuln) {
+        lives--; invuln = 90; shake = 14; sfx.ouch();
+        burst(t.x, t.y, ['#ff3b3b', '#ff6b6b'], 16, 4); p.vy = Math.min(p.vy, -6);
+        t.squished = 1;
+        if (lives <= 0) return gameOver('Splat!');
+      }
+    }
+  }
+  tomatoes = tomatoes.filter(t => t.squished < 30 && t.y - cam < H + 60);
+
+  for (const q of particles) { q.x += q.vx; q.y += q.vy; q.vy += .15; q.life--; }
+  particles = particles.filter(q => q.life > 0);
+  for (const q of popups) { q.y -= .8; q.life--; }
+  popups = popups.filter(q => q.life > 0);
+  if (shake > 0) shake--;
+
+  // fell off the bottom
+  if (p.y - cam > H + 40) gameOver('Whoops!');
+}
+
+function gameOver(title) {
+  state = 'over';
+  const prev = bestOf(who), isBest = score > prev;
+  if (isBest) store.set('pj-best-' + who, score);
+  const name = who[0].toUpperCase() + who.slice(1);
+  document.getElementById('overTitle').textContent = title;
+  document.getElementById('overScore').textContent = `${name} scored ${score}!`;
+  document.getElementById('overBest').textContent = isBest ? '🏆 New best score! Amazing! 🏆' : `Best score: ${prev} — you can do it!`;
+  setTimeout(() => document.getElementById('over').classList.remove('hidden'), 500);
+}
+
+// ---------- drawing ----------
+const clouds = Array.from({ length: 7 }, () => ({ x: rand(0, W), y: rand(0, H * 2), s: rand(.6, 1.3) }));
+function skyColor() {
+  // sky gets gradually deeper and sunset-y as you climb
+  const d = Math.min(1, highest / 20000);
+  const top = `hsl(${205 - d * 60}, ${80 - d * 10}%, ${78 - d * 30}%)`;
+  const bot = `hsl(${200 - d * 160}, 90%, ${90 - d * 15}%)`;
+  return [top, bot];
+}
+function drawBackground() {
+  const [a, b] = skyColor();
+  const g = ctx.createLinearGradient(0, 0, 0, H); g.addColorStop(0, a); g.addColorStop(1, b);
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // parallax clouds
+  ctx.fillStyle = 'rgba(255,255,255,.7)';
+  for (const c of clouds) {
+    let y = (c.y - cam * .3) % (H * 2); if (y < 0) y += H * 2; y -= H * .5;
+    puff(c.x, y, c.s);
+  }
+}
+function puff(x, y, s) {
+  ctx.beginPath();
+  ctx.arc(x, y, 22 * s, 0, 7); ctx.arc(x + 25 * s, y - 10 * s, 28 * s, 0, 7);
+  ctx.arc(x + 55 * s, y, 22 * s, 0, 7); ctx.arc(x + 27 * s, y + 8 * s, 22 * s, 0, 7);
+  ctx.fill();
+}
+function rr(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, h, r) : ctx.rect(x, y, w, h); }
+
+function drawPlat(pl) {
+  const y = pl.y - cam;
+  if (pl.type === 'cloud') {
+    ctx.save(); ctx.globalAlpha = pl.broken ? Math.max(0, 1 - pl.fall / 10) : 1;
+    ctx.fillStyle = '#ffffff'; ctx.strokeStyle = '#b8d8f0'; ctx.lineWidth = 2;
+    ctx.beginPath();
+    for (let i = 0; i < 4; i++) ctx.arc(pl.x + 12 + i * 17, y + 8 + (i % 2) * -3, 12, 0, 7);
+    ctx.fill(); ctx.restore(); return;
+  }
+  const col = pl.type === 'moving' ? ['#5ab0ff', '#2f84d4'] : ['#7ae582', '#3bb54a'];
+  ctx.fillStyle = col[1]; rr(pl.x, y + 4, PW, PH, 9); ctx.fill();
+  ctx.fillStyle = col[0]; rr(pl.x, y, PW, PH - 2, 9); ctx.fill();
+  ctx.fillStyle = 'rgba(255,255,255,.5)'; rr(pl.x + 8, y + 3, PW - 30, 4, 2); ctx.fill();
+  if (pl.spring) {
+    const sx = pl.x + pl.spring.x, up = pl.spring.t > 0 ? 14 : 6;
+    ctx.strokeStyle = '#888'; ctx.lineWidth = 3; ctx.beginPath();
+    for (let i = 0; i <= 4; i++) ctx.lineTo(sx + 4 + (i % 2) * 14, y - i * up / 4);
+    ctx.stroke();
+    ctx.fillStyle = '#ff4f5e'; rr(sx, y - up - 5, 22, 6, 3); ctx.fill();
+  }
+}
+
+function drawTomato(t) {
+  const x = t.x, y = t.y - cam, r = t.r;
+  ctx.save(); ctx.translate(x, y);
+  if (t.squished) {
+    const k = t.squished / 30;
+    ctx.globalAlpha = 1 - k; ctx.scale(1 + k * 1.2, Math.max(.15, 1 - k * 1.5));
+  } else {
+    const wob = Math.sin(t.t * 4) * .06; ctx.scale(1 + wob, 1 - wob);
+  }
+  // body
+  const g = ctx.createRadialGradient(-r * .35, -r * .35, r * .1, 0, 0, r * 1.1);
+  g.addColorStop(0, '#ff8a80'); g.addColorStop(.6, '#f43b3b'); g.addColorStop(1, '#c91d1d');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.ellipse(0, 0, r * 1.1, r, 0, 0, 7); ctx.fill();
+  // leaves
+  ctx.fillStyle = '#3bb54a';
+  for (let i = 0; i < 5; i++) {
+    ctx.save(); ctx.translate(0, -r * .85); ctx.rotate(i * 1.256);
+    ctx.beginPath(); ctx.ellipse(0, -6, 4, 9, 0, 0, 7); ctx.fill(); ctx.restore();
+  }
+  ctx.fillStyle = '#2a8a36'; ctx.fillRect(-2, -r - 8, 4, 8);
+  // cheeky face
+  ctx.fillStyle = '#fff';
+  const eh = t.blink > 0 ? 1.5 : 6;
+  ctx.beginPath(); ctx.ellipse(-8, -2, 5, eh, 0, 0, 7); ctx.ellipse(8, -2, 5, eh, 0, 0, 7); ctx.fill();
+  if (t.blink <= 0) {
+    ctx.fillStyle = '#222'; const lx = Math.sign(player.x + player.w / 2 - t.x) * 1.5;
+    ctx.beginPath(); ctx.arc(-8 + lx, -1, 2.6, 0, 7); ctx.arc(8 + lx, -1, 2.6, 0, 7); ctx.fill();
+  }
+  ctx.strokeStyle = '#7a0f0f'; ctx.lineWidth = 2.2; ctx.beginPath();
+  ctx.arc(0, 5, 6, .15 * Math.PI, .85 * Math.PI); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,170,190,.7)';
+  ctx.beginPath(); ctx.arc(-14, 6, 3.5, 0, 7); ctx.arc(14, 6, 3.5, 0, 7); ctx.fill();
+  ctx.restore();
+}
+
+function drawStar(s) {
+  const x = s.x, y = s.y - cam + Math.sin(s.t) * 4;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(Math.sin(s.t * .7) * .3);
+  ctx.fillStyle = '#ffd23f'; ctx.strokeStyle = '#e0a800'; ctx.lineWidth = 2;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) { const r = i % 2 ? 6 : 13, a = i * Math.PI / 5 - Math.PI / 2; ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r); }
+  ctx.closePath(); ctx.fill(); ctx.stroke(); ctx.restore();
+}
+
+function drawPlayer() {
+  const p = player, img = imgs[who];
+  if (invuln && Math.floor(invuln / 5) % 2) return;
+  const sq = p.squash * .18, stretch = p.vy < -6 ? .05 : 0;
+  const draw = (ox) => {
+    ctx.save();
+    ctx.translate(p.x + ox + p.w / 2, p.y - cam + p.h);
+    ctx.scale(p.face * (1 + sq), 1 - sq + stretch);
+    ctx.rotate(p.vx * .012 * p.face);
+    // soft shadow-outline so the photo pops against the sky
+    ctx.shadowColor = 'rgba(255,255,255,.9)'; ctx.shadowBlur = 8;
+    if (img.complete && img.naturalWidth) ctx.drawImage(img, -p.w / 2, -p.h, p.w, p.h);
+    else { ctx.fillStyle = '#ffb'; ctx.fillRect(-p.w / 2, -p.h, p.w, p.h); }
+    ctx.restore();
+  };
+  draw(0);
+  // wrap-around ghost
+  if (p.x < 0) draw(W); else if (p.x + p.w > W) draw(-W);
+}
+
+function drawHUD() {
+  ctx.fillStyle = 'rgba(255,255,255,.75)'; rr(10, 10, 170, 44, 16); ctx.fill();
+  ctx.fillStyle = '#2b2b52'; ctx.font = 'bold 26px "Comic Sans MS", "Chalkboard SE", sans-serif';
+  ctx.textAlign = 'left'; ctx.fillText('⭐ ' + score, 22, 42);
+  ctx.font = '24px sans-serif';
+  for (let i = 0; i < 3; i++) ctx.fillText(i < lives ? '❤️' : '🤍', 16 + i * 32, 84);
+}
+
+function draw() {
+  ctx.save();
+  if (shake) ctx.translate(rand(-shake, shake) * .5, rand(-shake, shake) * .5);
+  drawBackground();
+  if (state === 'menu') { ctx.restore(); return; }
+  for (const pl of plats) drawPlat(pl);
+  for (const s of stars) drawStar(s);
+  for (const t of tomatoes) drawTomato(t);
+  drawPlayer();
+  for (const q of particles) { ctx.globalAlpha = Math.min(1, q.life / 20); ctx.fillStyle = q.c; ctx.beginPath(); ctx.arc(q.x, q.y - cam, q.r, 0, 7); ctx.fill(); }
+  ctx.globalAlpha = 1;
+  ctx.textAlign = 'center'; ctx.font = 'bold 22px "Comic Sans MS", "Chalkboard SE", sans-serif';
+  for (const q of popups) { ctx.globalAlpha = Math.min(1, q.life / 20); ctx.fillStyle = '#fff'; ctx.fillText(q.text, q.x + 2, q.y - cam + 2); ctx.fillStyle = q.c; ctx.fillText(q.text, q.x, q.y - cam); }
+  ctx.globalAlpha = 1;
+  ctx.restore();
+  drawHUD();
+}
+
+// ---------- loop (fixed 60Hz step) ----------
+let last = performance.now(), acc = 0;
+function loop(now) {
+  acc += Math.min(100, now - last); last = now;
+  while (acc >= 1000 / 60) { if (state === 'play') update(); acc -= 1000 / 60; }
+  draw();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// ---------- menus ----------
+document.querySelectorAll('.card').forEach(c => {
+  c.onclick = () => start(c.dataset.who);
+  c.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') start(c.dataset.who); };
+});
+document.getElementById('again').onclick = () => start(who);
+document.getElementById('change').onclick = () => {
+  state = 'menu'; showBests();
+  document.getElementById('over').classList.add('hidden');
+  document.getElementById('menu').classList.remove('hidden');
+};
+addEventListener('keydown', e => {
+  if (state === 'over' && !document.getElementById('over').classList.contains('hidden') && (e.key === 'Enter' || e.key === ' ')) start(who);
+});
+showBests();
+})();
+</script>
+</body>
+</html>
